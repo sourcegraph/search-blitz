@@ -49,14 +49,14 @@ func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics,
 		return nil, nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", s.url(qc.Name), ioutil.NopCloser(&body))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.url(), ioutil.NopCloser(&body))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	req.Header.Set("Authorization", "token "+s.token)
 	req.Header.Set("X-Sourcegraph-Should-Trace", "true")
-	req.Header.Set("User-Agent", "SearchBlitz (monitoring)")
+	req.Header.Set("User-Agent", fmt.Sprintf("SearchBlitz (%s)", qc.Name))
 
 	start := time.Now()
 	resp, err := s.client.Do(req)
@@ -84,9 +84,6 @@ func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics,
 	return &respDec.Data, m, nil
 }
 
-func (s *client) url(queryName string) string {
-	if queryName != "" {
-		return s.endpoint + "/.api/graphql?" + queryName
-	}
-	return s.endpoint + "/.api/graphql"
+func (s *client) url() string {
+	return s.endpoint + "/.api/graphql?SearchBlitz"
 }
