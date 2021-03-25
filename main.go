@@ -42,13 +42,22 @@ OUTER:
 		for _, group := range config.Groups {
 			log15.Info("new group", "group", group.Name)
 			for _, qc := range group.Queries {
-				_, m, err := c.search(ctx, qc)
+				// Run the query through the graphql API
+				_, m, err := c.searchBatch(ctx, qc)
 				if err != nil {
 					log15.Error(err.Error())
 					continue
 				}
 				log15.Info("metrics", "group", group.Name, "query", qc.Query, "trace", m.trace, "duration_ms", m.took)
 				durationSearchHistogram.WithLabelValues(group.Name).Observe(float64(m.took))
+
+				// Run the query through the streaming API
+				r, d, err := c.searchStream(ctx, qc)
+				if err != nil {
+					log15.Error(err.Error())
+					continue
+				}
+				log15.Info("metrics", "group", group.Name, "query", qc.Query, "results", len(r), "duration", d)
 			}
 		}
 

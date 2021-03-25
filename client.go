@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -39,9 +42,8 @@ func newClient() (*client, error) {
 	}, nil
 }
 
-func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics, error) {
+func (s *client) searchBatch(ctx context.Context, qc QueryConfig) (*result, *metrics, error) {
 	var body bytes.Buffer
-	m := &metrics{}
 	if err := json.NewEncoder(&body).Encode(map[string]interface{}{
 		"query":     graphQLQuery,
 		"variables": map[string]string{"query": qc.Query},
@@ -49,7 +51,7 @@ func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics,
 		return nil, nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", s.url(), ioutil.NopCloser(&body))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.batchURL(), io.NopCloser(&body))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -60,6 +62,7 @@ func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics,
 
 	start := time.Now()
 	resp, err := s.client.Do(req)
+	m := &metrics{}
 	m.took = time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -84,6 +87,68 @@ func (s *client) search(ctx context.Context, qc QueryConfig) (*result, *metrics,
 	return &respDec.Data, m, nil
 }
 
-func (s *client) url() string {
+func (s *client) batchURL() string {
 	return s.endpoint + "/.api/graphql?SearchBlitz"
+}
+
+type streamResults []interface{}
+
+func (s *client) searchStream(ctx context.Context, qc QueryConfig) ([]streamResults, time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", s.streamURL(qc.Query), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "token "+s.token)
+	req.Header.Set("X-Sourcegraph-Should-Trace", "true")
+	req.Header.Set("User-Agent", fmt.Sprintf("SearchBlitz (%s)", qc.Name))
+
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case 200:
+		break
+	default:
+		return nil, 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var matchesEvents []streamResults
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(nil, 64*1024*1024)
+	for scanner.Scan() {
+		eventLine := scanner.Text()
+		if len(eventLine) == 0 {
+			continue
+		}
+
+		eventName := strings.TrimPrefix(scanner.Text(), "event: ")
+
+		if !scanner.Scan() {
+			return nil, 0, fmt.Errorf("expected data line: %w", scanner.Err())
+		}
+
+		data := strings.TrimPrefix(scanner.Text(), "data: ")
+
+		switch eventName {
+		case "matches":
+			var s streamResults
+			err := json.Unmarshal([]byte(data), &s)
+			if err != nil {
+				return nil, 0, err
+			}
+			matchesEvents = append(matchesEvents, s)
+		}
+	}
+
+	return matchesEvents, time.Since(start), nil
+}
+
+func (s *client) streamURL(query string) string {
+	return s.endpoint + "/.api/search/stream?SearchBlitz&q=" + url.QueryEscape(query)
 }
