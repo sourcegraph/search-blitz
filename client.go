@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -119,34 +117,21 @@ func (s *client) searchStream(ctx context.Context, qc QueryConfig) ([]streamResu
 	}
 
 	var matchesEvents []streamResults
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(nil, 64*1024*1024)
+	scanner := NewSSEScanner(resp.Body)
 	for scanner.Scan() {
-		eventLine := scanner.Text()
-		if len(eventLine) == 0 {
-			continue
-		}
-
-		eventName := strings.TrimPrefix(scanner.Text(), "event: ")
-
-		if !scanner.Scan() {
-			return nil, 0, fmt.Errorf("expected data line: %w", scanner.Err())
-		}
-
-		data := strings.TrimPrefix(scanner.Text(), "data: ")
-
-		switch eventName {
+		event := scanner.Event()
+		switch event.Type {
 		case "matches":
 			var s streamResults
-			err := json.Unmarshal([]byte(data), &s)
-			if err != nil {
+			if err := json.Unmarshal([]byte(event.Data), &s); err != nil {
 				return nil, 0, err
 			}
+
 			matchesEvents = append(matchesEvents, s)
 		}
 	}
 
-	return matchesEvents, time.Since(start), nil
+	return matchesEvents, time.Since(start), scanner.Err()
 }
 
 func (s *client) streamURL(query string) string {
